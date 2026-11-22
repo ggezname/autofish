@@ -256,6 +256,28 @@ function checkCatchFast(img, redZone, rx, rw, leadPx, needDbg) {
     return { hitInRed: hitInRed, hitX: hitX, whiteX: whiteX, centerRgb: centerRgb };
 }
 
+// ติดตามตำแหน่งแถบขาวตลอดแนวแถบ เพื่อวัดความเร็วจริงจากเวลาแต่ละเฟรม
+function findWhiteOnTrack(img, rx, rw, cy) {
+    let x1 = Math.max(rx + 2, 0);
+    let x2 = Math.min(rx + rw - 2, img.getWidth() - 1);
+    if (x2 <= x1) return -1;
+
+    let st = grabStrip(img, x1, cy - 1, x2 - x1 + 1, 3);
+    let bestX = -1, bestScore = 0;
+
+    for (let x = x1; x <= x2; x += 2) {
+        let score = 0;
+        if (isBrightWhite(getPix(st, x, cy))) score++;
+        if (isBrightWhite(getPix(st, x, cy - 1))) score++;
+        if (isBrightWhite(getPix(st, x, cy + 1))) score++;
+        if (score >= 2 && score > bestScore) {
+            bestScore = score;
+            bestX = x;
+        }
+    }
+    return bestX;
+}
+
 function checkBarStillOpen(img, rx, rw, cy) {
     let st = grabStrip(img, rx, cy, rw, 1);
     let darkCnt = 0, totCnt = 0;
@@ -386,32 +408,63 @@ function playFishingRound(roundNum, scr) {
     setStatus("🎯 เจอแดง! โหมด Turbo", "#FB923C", "รอบที่ " + roundNum + " / " + CFG.fishRounds);
     let catchStart = new Date().getTime();
     let prevWhiteX = -1, frameCnt = 0, closedCnt = 0;
+    let whiteSamples = [];
+    let lastDirection = 0;
 
     while (isRunning && (new Date().getTime() - catchStart < 10000)) {
         let t0 = new Date().getTime();
         let img = captureScreen();
         let t1 = new Date().getTime();
         let res = checkCatchFast(img, redZone, barState.rx, barState.rw, CFG.leadPx, isDebugOpen);
+        let whiteX = res.whiteX;
+        if (whiteX < 0) whiteX = findWhiteOnTrack(img, barState.rx, barState.rw, redZone.cy);
         let t2 = new Date().getTime();
+        let sampleTime = t2;
 
         let leadHit = false;
-        if (!res.hitInRed && CFG.leadPx > 0 && res.whiteX >= 0 && prevWhiteX >= 0) {
-            let vx = res.whiteX - prevWhiteX;
-            if (vx > 0 && res.whiteX >= (redZone.minX - CFG.leadPx) && res.whiteX <= redZone.maxX) leadHit = true;
-            if (vx < 0 && res.whiteX <= (redZone.maxX + CFG.leadPx) && res.whiteX >= redZone.minX) leadHit = true;
+        if (whiteX >= 0) {
+            if (whiteSamples.length > 0) {
+                let last = whiteSamples[whiteSamples.length - 1];
+                let dx = whiteX - last.x;
+                let dt = sampleTime - last.t;
+                if (dt > 0 && Math.abs(dx) >= 1) {
+                    let dir = dx > 0 ? 1 : -1;
+                    // ทิศกลับตัวมักเกิดเมื่อแถบขาวเด้งที่ขอบสนาม ให้เริ่มเก็บตัวอย่างใหม่
+                    if (lastDirection !== 0 && dir !== lastDirection) whiteSamples = [];
+                    lastDirection = dir;
+                }
+            }
+            whiteSamples.push({ x: whiteX, t: sampleTime });
+            if (whiteSamples.length > 5) whiteSamples.shift();
         }
-        if (res.whiteX >= 0) prevWhiteX = res.whiteX;
+
+        // ใช้เวลาจริงระหว่างภาพ ไม่สมมติว่า FPS คงที่
+        if (!res.hitInRed && whiteSamples.length >= 3) {
+            let first = whiteSamples[0];
+            let last = whiteSamples[whiteSamples.length - 1];
+            let dt = last.t - first.t;
+            let vx = dt > 0 ? (last.x - first.x) / dt : 0; // pixels/ms
+            if (Math.abs(vx) >= 0.015) {
+                let eta = vx > 0
+                    ? (redZone.minX - whiteX) / vx
+                    : (redZone.maxX - whiteX) / vx;
+                // ชดเชยเวลาจับภาพ + สแกน + เวลาสั่งแตะ โดยเผื่อเพิ่มเล็กน้อย
+                let actionLeadMs = Math.max(25, (t2 - t0) + 20);
+                if (eta >= 0 && eta <= actionLeadMs) leadHit = true;
+            }
+        }
+        if (whiteX >= 0) prevWhiteX = whiteX;
 
         if (isDebugOpen) {
             updateDebugMetrics({
-                scan: "แดง:" + redZone.minX + "-" + redZone.maxX + " | ขาว:" + (res.whiteX >= 0 ? res.whiteX : "-"),
+                scan: "แดง:" + redZone.minX + "-" + redZone.maxX + " | ขาว:" + (whiteX >= 0 ? whiteX : "-"),
                 rgb: "RGB:" + res.centerRgb + " | แคป:" + (t1 - t0) + "ms สแกน:" + (t2 - t1) + "ms"
             }, false);
         }
 
         if (res.hitInRed || leadHit) {
             click(CFG.fishBtn.x, CFG.fishBtn.y);
-            let tag = res.hitInRed ? ("ทับ X=" + res.hitX) : ("ดัก X=" + res.whiteX);
+            let tag = res.hitInRed ? ("ทับ X=" + res.hitX) : ("คาดการณ์ X=" + whiteX);
             addLog("⚡ กดตก! (" + tag + " " + (t1 - t0) + "+" + (t2 - t1) + "ms)");
             setStatus("⚡ กดจับปลาแล้ว!", "#22C55E", "รอบที่ " + roundNum + " / " + CFG.fishRounds);
             sleep(1800);
