@@ -323,9 +323,19 @@ function openPointPicker(keyName, labelName) {
 
 function openDualPointPicker(key1, key2, labelName) {
     closeAllPickers();
-    toast("ลาก +1 (ซ้ายบน) และ +2 (ขวาล่าง) ให้กรอบเขียวทับพอดี แล้วกด ยืนยัน");
-    let boxWin = floaty.rawWindow(<frame id="root" w="*" h="*"><text text="กรอบสแกน" textColor="#FFFFFF" textSize="9sp" gravity="center"/></frame>);
-    boxWin.setTouchable(false); boxWin.setPosition(0, 0); boxWin.setSize(40, 40);
+    let isBagGrid = (key1 === "bagTopLeft" && key2 === "bagBottomRight");
+    toast(isBagGrid
+        ? "ลาก +1 และ +2 กำหนดกรอบกระเป๋า ดูจุด 1-16 ให้ตรงกลางแต่ละช่อง แล้วกดยืนยัน"
+        : "ลาก +1 (ซ้ายบน) และ +2 (ขวาล่าง) ให้กรอบเขียวทับพอดี แล้วกด ยืนยัน");
+
+    let boxWin = floaty.rawWindow(
+        <frame id="root" w="*" h="*">
+            <text id="boxLabel" text="กรอบสแกน" textColor="#FFFFFF" textSize="9sp" gravity="center"/>
+        </frame>
+    );
+    boxWin.setTouchable(false);
+    boxWin.setPosition(0, 0);
+    boxWin.setSize(40, 40);
 
     let win1 = floaty.rawWindow(
         <vertical gravity="center">
@@ -346,35 +356,100 @@ function openDualPointPicker(key1, key2, labelName) {
         styleView(win1.crosshair, "#CCEF4444", 20, "#FFFFFF", 2);
         styleView(win1.btnCancel, "#475569", 6);
         styleView(win2.crosshair, "#CC0EA5E9", 20, "#FFFFFF", 2);
-        styleView(win2.btnConfirm, "#16A34A", 6, "#FFFFFF", 1);
+        styleView(win2.btnConfirm, "#16A34A", 6);
+        if (isBagGrid) boxWin.boxLabel.setText("กระเป๋า 4x4 • จุดเก็บ 1-16");
     });
 
-    let x1 = CFG[key1] ? Math.max(0, CFG[key1].x - 25) : 250, y1 = CFG[key1] ? Math.max(0, CFG[key1].y - 20) : 200;
-    let x2 = CFG[key2] ? Math.max(0, CFG[key2].x - 25) : 550, y2 = CFG[key2] ? Math.max(0, CFG[key2].y - 20) : 260;
-    if (Math.abs(x2 - x1) < 50 && Math.abs(y2 - y1) < 30) { x2 = x1 + 200; y2 = y1 + 45; }
+    let x1 = CFG[key1] ? Math.max(0, CFG[key1].x - 25) : 250;
+    let y1 = CFG[key1] ? Math.max(0, CFG[key1].y - 20) : 200;
+    let x2 = CFG[key2] ? Math.max(0, CFG[key2].x - 25) : 550;
+    let y2 = CFG[key2] ? Math.max(0, CFG[key2].y - 20) : 260;
+    if (Math.abs(x2 - x1) < 50 && Math.abs(y2 - y1) < 30) {
+        x2 = x1 + 200;
+        y2 = y1 + 45;
+    }
     win1.setPosition(Math.round(x1), Math.round(y1));
     win2.setPosition(Math.round(x2), Math.round(y2));
 
     let boxOff = { ox: 0, oy: 0 };
+    let gridMarkers = [];
+    let markerOffsets = [];
+
+    if (isBagGrid) {
+        for (let i = 0; i < 16; i++) {
+            let marker = floaty.rawWindow(
+                <text id="dot" text={String(i + 1)} textColor="#FFFFFF" textSize="9sp" textStyle="bold" gravity="center" w="30" h="30"/>
+            );
+            marker.setTouchable(false);
+            marker.setPosition(0, 0);
+            gridMarkers.push(marker);
+            activePickers.push(marker);
+            ui.run(() => styleView(marker.dot, (i % 2 === 0) ? "#DD16A34A" : "#DD2563EB", 15, "#FFFFFF", 1));
+        }
+    }
+
     function updateBox() {
         try {
-            let p1 = getViewCenter(win1.crosshair, win1), p2 = getViewCenter(win2.crosshair, win2);
-            boxWin.setPosition(Math.round(Math.min(p1.x, p2.x) - boxOff.ox), Math.round(Math.min(p1.y, p2.y) - boxOff.oy));
+            let p1 = getViewCenter(win1.crosshair, win1);
+            let p2 = getViewCenter(win2.crosshair, win2);
+            let left = Math.min(p1.x, p2.x);
+            let top = Math.min(p1.y, p2.y);
+            boxWin.setPosition(Math.round(left - boxOff.ox), Math.round(top - boxOff.oy));
             boxWin.setSize(Math.max(12, Math.abs(p2.x - p1.x)), Math.max(12, Math.abs(p2.y - p1.y)));
+
+            if (isBagGrid && markerOffsets.length === 16) {
+                let stepX = (p2.x - p1.x) / 3;
+                let stepY = (p2.y - p1.y) / 3;
+                for (let row = 0; row < 4; row++) {
+                    for (let col = 0; col < 4; col++) {
+                        let index = row * 4 + col;
+                        let px = p1.x + col * stepX;
+                        let py = p1.y + row * stepY;
+                        let off = markerOffsets[index];
+                        gridMarkers[index].setPosition(
+                            Math.round(px - off.ox - 15),
+                            Math.round(py - off.oy - 15)
+                        );
+                    }
+                }
+            }
         } catch (e) {}
     }
+
     function dragUpdate(win) {
         let px = 0, py = 0, dx = 0, dy = 0;
         win.crosshair.setOnTouchListener(function (v, e) {
-            if (e.getAction() === e.ACTION_DOWN) { dx = e.getRawX(); dy = e.getRawY(); px = win.getX(); py = win.getY(); }
-            else if (e.getAction() === e.ACTION_MOVE) { win.setPosition(Math.round(px + (e.getRawX() - dx)), Math.round(py + (e.getRawY() - dy))); updateBox(); }
+            if (e.getAction() === e.ACTION_DOWN) {
+                dx = e.getRawX(); dy = e.getRawY();
+                px = win.getX(); py = win.getY();
+            } else if (e.getAction() === e.ACTION_MOVE) {
+                win.setPosition(
+                    Math.round(px + (e.getRawX() - dx)),
+                    Math.round(py + (e.getRawY() - dy))
+                );
+                updateBox();
+            }
             return true;
         });
     }
-    dragUpdate(win1); dragUpdate(win2);
-    setTimeout(() => { boxOff = getWindowOffset(boxWin, boxWin.root); updateBox(); }, 150);
+    dragUpdate(win1);
+    dragUpdate(win2);
 
-    win1.btnCancel.click(() => { toast("ยกเลิกการตั้งค่า"); closeAllPickers(); });
+    setTimeout(() => {
+        boxOff = getWindowOffset(boxWin, boxWin.root);
+        if (isBagGrid) {
+            markerOffsets = [];
+            for (let i = 0; i < gridMarkers.length; i++) {
+                markerOffsets.push(getWindowOffset(gridMarkers[i], gridMarkers[i].dot));
+            }
+        }
+        updateBox();
+    }, 180);
+
+    win1.btnCancel.click(() => {
+        toast("ยกเลิกการตั้งค่า");
+        closeAllPickers();
+    });
     win2.btnConfirm.click(() => {
         try {
             CFG[key1] = getViewCenter(win1.crosshair, win1);
@@ -382,11 +457,13 @@ function openDualPointPicker(key1, key2, labelName) {
             saveCfg();
             toast("บันทึกกรอบ " + labelName + " เรียบร้อย!");
             addLog("ตั้งกรอบ " + labelName);
-        } catch (err) { toast("Error: " + err); }
-        finally { closeAllPickers(); }
+        } catch (err) {
+            toast("Error: " + err);
+        } finally {
+            closeAllPickers();
+        }
     });
 }
-
 function previewScanBox() {
     let rx = Math.min(CFG.barStart.x, CFG.barEnd.x), ry = Math.min(CFG.barStart.y, CFG.barEnd.y);
     let rw = Math.max(20, Math.abs(CFG.barEnd.x - CFG.barStart.x)), rh = Math.max(15, Math.abs(CFG.barEnd.y - CFG.barStart.y));
